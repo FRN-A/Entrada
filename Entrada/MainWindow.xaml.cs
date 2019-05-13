@@ -13,6 +13,10 @@ using System.Windows.Media.Imaging;
 using System.Windows.Navigation;
 using System.Windows.Shapes;
 
+using System.Diagnostics;
+
+using System.Windows.Threading;
+
 using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
 using NAudio.Dsp;
@@ -25,14 +29,54 @@ namespace Entrada
     public partial class MainWindow : Window
     {
         WaveIn waveIn;
+		DispatcherTimer timer;
+		Stopwatch cronometro;
 
+		string letraAnterior = "";
+		string letraAcutal = "";
+		float frecuenciaFundamental = 0;
+		
         public MainWindow()
         {
-            InitializeComponent();
+			timer = new DispatcherTimer();
+			timer.Interval = TimeSpan.FromMilliseconds(100);
+			timer.Tick += Timer_Tick;
+
+			cronometro = new Stopwatch();
+
+			InitializeComponent();
             LlenarComboDispositivos();
         }
 
-        public void LlenarComboDispositivos()
+		private void Timer_Tick(object sender, EventArgs e)
+		{
+			lblFrecuencia.Text = frecuenciaFundamental.ToString("f");
+
+			//Carro
+			if (frecuenciaFundamental >= 500)
+			{
+				var leftCarro = Canvas.GetLeft(imgCarro);
+				Canvas.SetLeft(imgCarro, leftCarro + 1);
+			}
+
+			//Texto
+			if (letraAcutal != "" && letraAcutal == letraAnterior)
+			{
+				//evaluar si ya paso un segundo
+				if(cronometro.ElapsedMilliseconds >= 1000)
+				{
+					txtTexto.AppendText(letraAcutal);
+					letraAcutal = "";
+					cronometro.Restart();
+				}
+			}
+			else
+			{
+				cronometro.Restart();
+			}
+		}
+
+		public void LlenarComboDispositivos()
         {
             for(int i=0; i<WaveIn.DeviceCount; 
                 i++)
@@ -47,6 +91,7 @@ namespace Entrada
 
         private void btnIniciar_Click(object sender, RoutedEventArgs e)
         {
+			timer.Start();
             waveIn = new WaveIn();
             //Formato de audio
             waveIn.WaveFormat =
@@ -60,61 +105,100 @@ namespace Entrada
             waveIn.StartRecording();
         }
 
-        private void WaveIn_DataAvailable(object sender, WaveInEventArgs e)
-        {
-            byte[] buffer = e.Buffer;
-            int bytesGrabados = e.BytesRecorded;
-            float acumulador = 0.0f;
+		private void WaveIn_DataAvailable(object sender, WaveInEventArgs e)
+		{
+			byte[] buffer = e.Buffer;
+			int bytesGrabados = e.BytesRecorded;
+			float acumulador = 0.0f;
 
-            double numeroDeMuestras =
-                bytesGrabados / 2;
-            int exponente = 1;
-            int numeroDeMuestrasComplejas = 0;
-            int bitsMaximos = 0;
+			double numeroDeMuestras =
+				bytesGrabados / 2;
+			int exponente = 1;
+			int numeroDeMuestrasComplejas = 0;
+			int bitsMaximos = 0;
 
-            do
-            {
-                bitsMaximos = (int)Math.Pow(2, exponente);
-                exponente++;
-            } while (bitsMaximos < numeroDeMuestras);
+			do
+			{
+				bitsMaximos = (int)Math.Pow(2, exponente);
+				exponente++;
+			} while (bitsMaximos < numeroDeMuestras);
 
-            numeroDeMuestrasComplejas = bitsMaximos / 2;
-            exponente--;
+			numeroDeMuestrasComplejas = bitsMaximos / 2;
+			exponente -= 2;
 
-            Complex[] señalCompleja = new Complex[numeroDeMuestrasComplejas];
+			Complex[] señalCompleja = new Complex[numeroDeMuestrasComplejas];
 
-            for(int i=0; i<bytesGrabados; i+=2)
-            {
-                //Transformando 2 bytes separados
-                //en una muestra de 16 bits
-                //1.- Toma el segundo byte y el antepone
-                //     8 0's al principio
-                //2.- Hace un OR con el primer byte, al cual
-                //   automaticamente se le llenan 8 0's al final
-                short muestra =
-                    (short)(buffer[i + 1] << 8 | buffer[i]);
-                float muestra32bits =
-                    (float)muestra / 32768.0f;
-                acumulador += Math.Abs(muestra32bits);
+			for (int i = 0; i < bytesGrabados; i += 2)
+			{
+				//Transformando 2 bytes separados
+				//en una muestra de 16 bits
+				//1.- Toma el segundo byte y el antepone
+				//     8 0's al principio
+				//2.- Hace un OR con el primer byte, al cual
+				//   automaticamente se le llenan 8 0's al final
+				short muestra =
+					(short)(buffer[i + 1] << 8 | buffer[i]);
+				float muestra32bits =
+					(float)muestra / 32768.0f;
+				acumulador += Math.Abs(muestra32bits);
 
-                if (i/2 < numeroDeMuestrasComplejas)
-                {
-                    señalCompleja[i / 2].X =
-                        muestra32bits;
-                }
+				if (i / 2 < numeroDeMuestrasComplejas)
+				{
+					señalCompleja[i / 2].X =
+						muestra32bits;
+				}
 
-            }
-            float promedio = acumulador / 
-                (bytesGrabados / 2.0f);
-            sldMicrofono.Value = (double)promedio;
+			}
+			float promedio = acumulador /
+				(bytesGrabados / 2.0f);
+			sldMicrofono.Value = (double)promedio;
 
-            //FastFourierTransform.FFT()
+			//FastFourierTransform.FFT()
 
-            if (promedio > 0)
-            {
-                FastFourierTransform.FFT(true, exponente, señalCompleja);
-            }
-        }
+			if (promedio > 0)
+			{
+				FastFourierTransform.FFT(true, exponente, señalCompleja);
+				float[] valoresAbsolutos = new float[señalCompleja.Length];
+				for (int i = 0; i < señalCompleja.Length; i++)
+				{
+					valoresAbsolutos[i] = (float)Math.Sqrt((señalCompleja[i].X * señalCompleja[i].X) + (señalCompleja[i].Y * señalCompleja[i].Y));
+				}
+
+				int indiceSeñalConMasPresencia = valoresAbsolutos.ToList().IndexOf(valoresAbsolutos.Max());
+
+				frecuenciaFundamental = (float)(indiceSeñalConMasPresencia * waveIn.WaveFormat.SampleRate) / (float)valoresAbsolutos.Length;
+
+
+				letraAnterior = letraAcutal;
+				if (frecuenciaFundamental >= 500 && frecuenciaFundamental < 550)
+				{
+					letraAcutal = "A";
+				} else if (frecuenciaFundamental >= 600 && frecuenciaFundamental < 650)
+				{
+					letraAcutal = "E";
+				}
+				else if (frecuenciaFundamental >= 700 && frecuenciaFundamental < 750)
+				{
+					letraAcutal = "I";
+				}
+				else if (frecuenciaFundamental >= 800 && frecuenciaFundamental < 850)
+				{
+					letraAcutal = "O";
+				}
+				else if (frecuenciaFundamental >= 900 && frecuenciaFundamental < 950)
+				{
+					letraAcutal = "U";
+				} else
+				{
+					letraAcutal = "";
+				}
+
+
+
+
+
+			}
+		}
 
         private void btnDetener_Click(object sender, RoutedEventArgs e)
         {
